@@ -1,0 +1,6 @@
+{
+  "name": "图片排版审核平台",
+  "description": "智能图片内容排版审核平台，支持OCR文字识别、颜色分析、自定义排版规则及合规性检测",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

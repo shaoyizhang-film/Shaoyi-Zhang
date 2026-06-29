@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>智能图片排版审核平台 - Layout Approval Platform</title>
+    <!-- Preconnect for premium typography fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      #root {
+        height: 100%;
+      }
+      /* Custom styles for physical printing optimization */
+      @media print {
+        body {
+          background: white !important;
+          color: black !important;
+        }
+        .no-print {
+          display: none !important;
+        }
+        .print-full {
+          width: 100% !important;
+          height: auto !important;
+          overflow: visible !important;
+          position: static !important;
+        }
+      }
+    </style>
+  </head>
+  <body class="h-full bg-[#0B0F19] text-slate-100 antialiased overflow-hidden">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
