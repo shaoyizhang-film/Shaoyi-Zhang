@@ -26,7 +26,8 @@ import {
   Edit2,
   Check,
   X,
-  Type
+  Type,
+  Ruler
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import chroma from 'chroma-js';
@@ -192,6 +193,7 @@ export default function App() {
 
   const [showAnnotations, setShowAnnotations] = useState<boolean>(true);
   const [highlightedBoxIndex, setHighlightedBoxIndex] = useState<number | null>(null);
+  const [hoveredBoxIndex, setHoveredBoxIndex] = useState<number | null>(null);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
 
   // Initialize from LocalStorage
@@ -1600,11 +1602,33 @@ export default function App() {
                   className="w-full h-full object-contain shadow-2xl rounded-sm pointer-events-none"
                 />
 
+                {/* HORIZONTAL & VERTICAL CENTERLINE ALIGNMENT GUIDES */}
+                {showAnnotations && (
+                  <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden">
+                    {/* Vertical Centerline */}
+                    <div className="absolute inset-y-0 left-1/2 w-[1.5px] border-l-2 border-dashed border-cyan-400/70">
+                      <div className="absolute top-3 left-3 bg-slate-900/90 border border-cyan-500/30 text-cyan-400 text-[9px] px-2 py-0.5 rounded-md shadow-lg font-mono flex items-center gap-1.5 backdrop-blur-sm">
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                        <span>垂直中心基准线 (X: 50%)</span>
+                      </div>
+                    </div>
+                    {/* Horizontal Centerline */}
+                    <div className="absolute inset-x-0 top-1/2 h-[1.5px] border-t-2 border-dashed border-cyan-400/70">
+                      <div className="absolute left-3 top-3 bg-slate-900/90 border border-cyan-500/30 text-cyan-400 text-[9px] px-2 py-0.5 rounded-md shadow-lg font-mono flex items-center gap-1.5 backdrop-blur-sm">
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                        <span>水平中心基准线 (Y: 50%)</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* OVERLAYS ANNOTATION CANVAS */}
                 {showAnnotations && overlayBoxes.length > 0 && (
                   <div className="absolute inset-0 z-20 pointer-events-auto">
                     {overlayBoxes.map((box, idx) => {
                       const isHighlighted = highlightedBoxIndex === idx;
+                      const isHovered = hoveredBoxIndex === idx;
+                      const showMeasurements = isHighlighted || isHovered;
                       
                       let strokeColor = 'border-emerald-500 bg-emerald-500/10 text-emerald-300';
                       let iconColor = 'bg-emerald-500';
@@ -1617,24 +1641,193 @@ export default function App() {
                         iconColor = 'bg-amber-500';
                       }
 
+                      // Physical values
+                      const left_px = Math.round(box.x * currentImage.width);
+                      const right_px = Math.round((box.x + box.w) * currentImage.width);
+                      const top_px = Math.round(box.y * currentImage.height);
+                      const bottom_px = Math.round((box.y + box.h) * currentImage.height);
+                      
+                      const imgCenterX = currentImage.width / 2;
+                      const imgCenterY = currentImage.height / 2;
+
+                      const left_dist = Math.abs(left_px - imgCenterX);
+                      const right_dist = Math.abs(right_px - imgCenterX);
+                      const top_dist = Math.abs(top_px - imgCenterY);
+                      const bottom_dist = Math.abs(bottom_px - imgCenterY);
+
+                      const deltaX = Math.round((box.x + box.w/2 - 0.5) * currentImage.width);
+                      const deltaY = Math.round((box.y + box.h/2 - 0.5) * currentImage.height);
+
                       return (
-                        <div
-                          key={idx}
-                          style={boxStyle(box)}
-                          className={`absolute border-2 rounded-sm transition-all flex flex-col justify-between ${strokeColor} ${
-                            isHighlighted ? 'ring-4 ring-blue-500 ring-offset-2 scale-[1.02] z-30' : 'hover:scale-[1.01]'
-                          }`}
-                        >
-                          {/* Top Tag Label */}
-                          <div className={`absolute top-0 left-0 -translate-y-full ${iconColor} text-white font-sans text-[10px] font-bold px-1 py-0.5 rounded-t-sm flex items-center gap-1 shadow-md whitespace-nowrap`}>
-                            <span>{box.label}</span>
-                            {box.metricValue && (
-                              <span className="opacity-80 font-mono text-[9px] border-l border-white/20 pl-1 ml-1">
-                                {box.metricValue}
-                              </span>
+                        <React.Fragment key={idx}>
+                          {/* THE BOUNDING BOX */}
+                          <div
+                            style={boxStyle(box)}
+                            onMouseEnter={() => setHoveredBoxIndex(idx)}
+                            onMouseLeave={() => setHoveredBoxIndex(null)}
+                            onClick={() => {
+                              setHighlightedBoxIndex(isHighlighted ? null : idx);
+                            }}
+                            className={`absolute border-2 rounded-sm transition-all flex flex-col justify-between cursor-pointer ${strokeColor} ${
+                              isHighlighted ? 'ring-4 ring-blue-500 ring-offset-1 scale-[1.01] z-30' : 'hover:scale-[1.01] z-20'
+                            }`}
+                          >
+                            {/* Top Tag Label */}
+                            <div className={`absolute top-0 left-0 -translate-y-full ${iconColor} text-white font-sans text-[10px] font-bold px-1 py-0.5 rounded-t-sm flex items-center gap-1 shadow-md whitespace-nowrap`}>
+                              <span>{box.label}</span>
+                              {box.metricValue && (
+                                <span className="opacity-80 font-mono text-[9px] border-l border-white/20 pl-1 ml-1">
+                                  {box.metricValue}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Centering Helper Badge inside the Box */}
+                            {showMeasurements && (
+                              <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-slate-950/20 backdrop-blur-[0.5px]">
+                                <div className="bg-slate-900/90 border border-slate-700/80 rounded px-1.5 py-0.5 text-[8px] font-mono font-bold text-slate-200 shadow space-y-0.5 text-center">
+                                  <div className="text-cyan-400">
+                                    ΔX: {deltaX > 0 ? `+${deltaX}` : deltaX}px
+                                  </div>
+                                  <div className="text-pink-400">
+                                    ΔY: {deltaY > 0 ? `+${deltaY}` : deltaY}px
+                                  </div>
+                                </div>
+                              </div>
                             )}
                           </div>
-                        </div>
+
+                          {/* MEASUREMENT GUIDELINES - DRAWN TO THE CENTERLINES */}
+                          {showMeasurements && (
+                            <div className="absolute inset-0 pointer-events-none z-30">
+                              
+                              {/* 1. Left Edge to Vertical Centerline */}
+                              {box.x < 0.5 ? (
+                                <div 
+                                  className="absolute border-t border-dashed border-cyan-400/90 flex items-center justify-center"
+                                  style={{
+                                    left: `${box.x * 100}%`,
+                                    width: `${(0.5 - box.x) * 100}%`,
+                                    top: `${(box.y + box.h / 3) * 100}%`,
+                                    height: '0'
+                                  }}
+                                >
+                                  <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
+                                    L: {left_dist}px
+                                  </span>
+                                </div>
+                              ) : (
+                                <div 
+                                  className="absolute border-t border-dashed border-cyan-400/90 flex items-center justify-center"
+                                  style={{
+                                    left: '50%',
+                                    width: `${(box.x - 0.5) * 100}%`,
+                                    top: `${(box.y + box.h / 3) * 100}%`,
+                                    height: '0'
+                                  }}
+                                >
+                                  <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
+                                    L: {left_dist}px
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* 2. Right Edge to Vertical Centerline */}
+                              {(box.x + box.w) < 0.5 ? (
+                                <div 
+                                  className="absolute border-t border-dashed border-pink-400/90 flex items-center justify-center"
+                                  style={{
+                                    left: `${(box.x + box.w) * 100}%`,
+                                    width: `${(0.5 - (box.x + box.w)) * 100}%`,
+                                    top: `${(box.y + box.h * 2 / 3) * 100}%`,
+                                    height: '0'
+                                  }}
+                                >
+                                  <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
+                                    R: {right_dist}px
+                                  </span>
+                                </div>
+                              ) : (
+                                <div 
+                                  className="absolute border-t border-dashed border-pink-400/90 flex items-center justify-center"
+                                  style={{
+                                    left: '50%',
+                                    width: `${((box.x + box.w) - 0.5) * 100}%`,
+                                    top: `${(box.y + box.h * 2 / 3) * 100}%`,
+                                    height: '0'
+                                  }}
+                                >
+                                  <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
+                                    R: {right_dist}px
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* 3. Top Edge to Horizontal Centerline */}
+                              {box.y < 0.5 ? (
+                                <div 
+                                  className="absolute border-l border-dashed border-cyan-400/90 flex flex-col items-center justify-center"
+                                  style={{
+                                    top: `${box.y * 100}%`,
+                                    height: `${(0.5 - box.y) * 100}%`,
+                                    left: `${(box.x + box.w / 3) * 100}%`,
+                                    width: '0'
+                                  }}
+                                >
+                                  <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
+                                    T: {top_dist}px
+                                  </span>
+                                </div>
+                              ) : (
+                                <div 
+                                  className="absolute border-l border-dashed border-cyan-400/90 flex flex-col items-center justify-center"
+                                  style={{
+                                    top: '50%',
+                                    height: `${(box.y - 0.5) * 100}%`,
+                                    left: `${(box.x + box.w / 3) * 100}%`,
+                                    width: '0'
+                                  }}
+                                >
+                                  <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
+                                    T: {top_dist}px
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* 4. Bottom Edge to Horizontal Centerline */}
+                              {(box.y + box.h) < 0.5 ? (
+                                <div 
+                                  className="absolute border-l border-dashed border-pink-400/90 flex flex-col items-center justify-center"
+                                  style={{
+                                    top: `${(box.y + box.h) * 100}%`,
+                                    height: `${(0.5 - (box.y + box.h)) * 100}%`,
+                                    left: `${(box.x + box.w * 2 / 3) * 100}%`,
+                                    width: '0'
+                                  }}
+                                >
+                                  <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
+                                    B: {bottom_dist}px
+                                  </span>
+                                </div>
+                              ) : (
+                                <div 
+                                  className="absolute border-l border-dashed border-pink-400/90 flex flex-col items-center justify-center"
+                                  style={{
+                                    top: '50%',
+                                    height: `${((box.y + box.h) - 0.5) * 100}%`,
+                                    left: `${(box.x + box.w * 2 / 3) * 100}%`,
+                                    width: '0'
+                                  }}
+                                >
+                                  <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
+                                    B: {bottom_dist}px
+                                  </span>
+                                </div>
+                              )}
+
+                            </div>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </div>
@@ -2256,9 +2449,69 @@ export default function App() {
                           </div>
 
                           {/* Block coordinates and size summary */}
-                          <div className="flex justify-between text-[9px] text-slate-500 font-mono">
-                            <span>中心坐标: ({(box.x + box.w/2).toFixed(2)}, {(box.y + box.h/2).toFixed(2)})</span>
-                            <span>宽度比: {Math.round(box.w * 100)}%</span>
+                          <div className="flex justify-between text-[9px] text-slate-500 font-mono border-b border-slate-800/40 pb-2">
+                            <span>中心比例: ({(box.x + box.w/2).toFixed(2)}, {(box.y + box.h/2).toFixed(2)})</span>
+                            <span>宽度占比: {Math.round(box.w * 100)}%</span>
+                          </div>
+
+                          {/* Centering Alignment & Boundary Measurements Section */}
+                          <div className="bg-slate-950/40 rounded-lg p-2.5 space-y-2 text-[10px] font-mono border border-slate-800/80 no-print">
+                            <div className="flex items-center gap-1.5 text-slate-400 border-b border-slate-800/40 pb-1.5">
+                              <Ruler className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              <span className="font-bold text-[9px] text-slate-300">对齐与中心参考线测距</span>
+                            </div>
+
+                            {/* Horizontal measurements */}
+                            <div className="space-y-1">
+                              <div className="flex justify-between items-center text-slate-400">
+                                <span className="flex items-center gap-1">
+                                  <span className="w-1 h-1 rounded-full bg-cyan-400" />
+                                  水平偏离:
+                                </span>
+                                <span className={`font-bold ${
+                                  Math.abs(Math.round((box.x + box.w/2 - 0.5) * currentImage.width)) <= 2 
+                                    ? 'text-emerald-400 font-sans' 
+                                    : 'text-cyan-400'
+                                }`}>
+                                  {Math.round((box.x + box.w/2 - 0.5) * currentImage.width) === 0 
+                                    ? '完全水平居中 ✨' 
+                                    : Math.round((box.x + box.w/2 - 0.5) * currentImage.width) > 0 
+                                      ? `偏右 ${Math.abs(Math.round((box.x + box.w/2 - 0.5) * currentImage.width))} px`
+                                      : `偏左 ${Math.abs(Math.round((box.x + box.w/2 - 0.5) * currentImage.width))} px`
+                                  }
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-[9px] text-slate-500 pl-2">
+                                <div>左侧距中轴: <span className="text-slate-300 font-bold">{Math.round(Math.abs(box.x * currentImage.width - currentImage.width / 2))}px</span></div>
+                                <div>右侧距中轴: <span className="text-slate-300 font-bold">{Math.round(Math.abs((box.x + box.w) * currentImage.width - currentImage.width / 2))}px</span></div>
+                              </div>
+                            </div>
+
+                            {/* Vertical measurements */}
+                            <div className="space-y-1 pt-1.5 border-t border-slate-900/50">
+                              <div className="flex justify-between items-center text-slate-400">
+                                <span className="flex items-center gap-1">
+                                  <span className="w-1 h-1 rounded-full bg-pink-400" />
+                                  垂直偏离:
+                                </span>
+                                <span className={`font-bold ${
+                                  Math.abs(Math.round((box.y + box.h/2 - 0.5) * currentImage.height)) <= 2 
+                                    ? 'text-emerald-400 font-sans' 
+                                    : 'text-pink-400'
+                                }`}>
+                                  {Math.round((box.y + box.h/2 - 0.5) * currentImage.height) === 0 
+                                    ? '完全垂直居中 ✨' 
+                                    : Math.round((box.y + box.h/2 - 0.5) * currentImage.height) > 0 
+                                      ? `偏下 ${Math.abs(Math.round((box.y + box.h/2 - 0.5) * currentImage.height))} px`
+                                      : `偏上 ${Math.abs(Math.round((box.y + box.h/2 - 0.5) * currentImage.height))} px`
+                                  }
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-[9px] text-slate-500 pl-2">
+                                <div>顶侧距中轴: <span className="text-slate-300 font-bold">{Math.round(Math.abs(box.y * currentImage.height - currentImage.height / 2))}px</span></div>
+                                <div>底侧距中轴: <span className="text-slate-300 font-bold">{Math.round(Math.abs((box.y + box.h) * currentImage.height - currentImage.height / 2))}px</span></div>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       );
