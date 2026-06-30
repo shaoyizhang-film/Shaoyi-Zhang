@@ -27,7 +27,10 @@ import {
   Check,
   X,
   Type,
-  Ruler
+  Ruler,
+  Layers,
+  LayoutGrid,
+  Sliders
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import chroma from 'chroma-js';
@@ -85,6 +88,7 @@ interface BoundingBox {
   label: string;
   status: 'pass' | 'fail' | 'warn' | 'info';
   metricValue?: string;
+  targetType?: string;
 }
 
 interface CustomField {
@@ -162,6 +166,101 @@ export default function App() {
   // Batch Image Audit States
   const [imageList, setImageList] = useState<ImageMetadata[]>([]);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+
+  // New Workspace Modes:
+  // 'single' = Single image deep audit stage (existing)
+  // 'batch_compare' = Batch consistency & alignment matching table
+  // 'overlay_check' = Multi-image overlay & transparency alignment sandbox
+  const [workspaceMode, setWorkspaceMode] = useState<'single' | 'batch_compare' | 'overlay_check'>('single');
+
+  // Manual Reference Lines (Requirement #2)
+  // type: 'h' (horizontal) or 'v' (vertical)
+  // value: float percentage of image width/height (0.0 to 1.0)
+  const [manualGuides, setManualGuides] = useState<{ id: string; type: 'h' | 'v'; value: number }[]>([
+    { id: 'g-h1', type: 'h', value: 0.3 }, 
+    { id: 'g-v1', type: 'v', value: 0.7 }
+  ]);
+  const [activeGuideId, setActiveGuideId] = useState<string | null>(null);
+  const [draggingGuideId, setDraggingGuideId] = useState<string | null>(null);
+
+  // Global Dragging handler for manual reference lines (Requirement #2)
+  useEffect(() => {
+    if (!draggingGuideId) return;
+
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      if (!previewImgRef.current) return;
+      const rect = previewImgRef.current.getBoundingClientRect();
+      const guide = manualGuides.find(g => g.id === draggingGuideId);
+      if (!guide) return;
+
+      if (guide.type === 'h') {
+        const newValue = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+        setManualGuides(prev => prev.map(g => g.id === draggingGuideId ? { ...g, value: newValue } : g));
+      } else {
+        const newValue = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        setManualGuides(prev => prev.map(g => g.id === draggingGuideId ? { ...g, value: newValue } : g));
+      }
+    };
+
+    const handleGlobalMouseUp = () => {
+      setDraggingGuideId(null);
+    };
+
+    window.addEventListener('mousemove', handleGlobalMouseMove);
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+    };
+  }, [draggingGuideId, manualGuides]);
+
+  // Multi-image overlay settings (Requirement #3)
+  const [overlayImageIds, setOverlayImageIds] = useState<string[]>([]); // which images are visible in stack
+  const [imageOpacities, setImageOpacities] = useState<{ [imgId: string]: number }>({}); // individual opacities
+  const [globalOverlayOpacity, setGlobalOverlayOpacity] = useState<number>(0.5);
+  const [overlayBlendMode, setOverlayBlendMode] = useState<string>('normal'); // normal, multiply, screen, difference
+
+  // Batch comparison settings (Requirement #1)
+  const [compareTarget, setCompareTarget] = useState<string>('logo'); // logo, title, footer, top-left, top-right, bottom-left, bottom-right, center
+  const [comparisonTolerance, setComparisonTolerance] = useState<number>(8); // pixel threshold for warnings (default 8px)
+  const [isDrawingManualBox, setIsDrawingManualBox] = useState<boolean>(false);
+  const [manualDrawStart, setManualDrawStart] = useState<{ x: number; y: number } | null>(null);
+  const [manualDrawCurrent, setManualDrawCurrent] = useState<{ x: number; y: number } | null>(null);
+
+  // Sync images for overlay checklist automatically
+  useEffect(() => {
+    if (imageList.length > 0) {
+      setOverlayImageIds(prev => {
+        const ids = imageList.map(img => img.id);
+        const existing = prev.filter(id => ids.includes(id));
+        const newIds = ids.filter(id => !prev.includes(id));
+        return [...existing, ...newIds];
+      });
+      setImageOpacities(prev => {
+        const updated = { ...prev };
+        imageList.forEach(img => {
+          if (updated[img.id] === undefined) {
+            updated[img.id] = img.id === selectedImageId ? 1.0 : 0.4;
+          }
+        });
+        return updated;
+      });
+    }
+  }, [imageList]);
+
+  // Keep selected image opacity at 1.0 or user-defined value
+  useEffect(() => {
+    if (selectedImageId) {
+      setImageOpacities(prev => {
+        if (prev[selectedImageId] === undefined) return prev;
+        return {
+          ...prev,
+          [selectedImageId]: 1.0
+        };
+      });
+    }
+  }, [selectedImageId]);
 
   const currentImage = useMemo(() => {
     return imageList.find(img => img.id === selectedImageId) || null;
@@ -316,6 +415,159 @@ export default function App() {
   // ==========================================
   // IMAGE AND FILE LOADER ENGINE
   // ==========================================
+  const loadDemoBatchImages = () => {
+    const batch: ImageMetadata[] = [];
+    const bannerData = [
+      {
+        id: 'demo-1',
+        name: '智能终端主图_1_基准规范.png',
+        color1: '#0B132B', color2: '#1C2541',
+        logoX: 60, logoY: 50,
+        titleX: 400, titleY: 260, titleSize: 42,
+        footerX: 400, footerY: 480, footerSize: 14,
+        logoText: '✦ NEXUS AI',
+        titleText: '开启通用智能新纪元',
+        footerText: '*注：排版准则示范，最终解释权归NEXUS所有',
+        status: 'passed' as const,
+        complianceRate: 100,
+        failedRulesCount: 0
+      },
+      {
+        id: 'demo-2',
+        name: '智能终端主图_2_微幅偏移.png',
+        color1: '#1A0F2E', color2: '#2D144B',
+        logoX: 85, logoY: 72, // Offset by +25px, +22px
+        titleX: 400, titleY: 260, titleSize: 42,
+        footerX: 400, footerY: 450, footerSize: 14, // Offset by -30px
+        logoText: '✦ NEXUS AI',
+        titleText: '开启通用智能新纪元',
+        footerText: '*注：排版准则示范，最终解释权归NEXUS所有',
+        status: 'warned' as const,
+        complianceRate: 80,
+        failedRulesCount: 0
+      },
+      {
+        id: 'demo-3',
+        name: '智能终端主图_3_严重偏离.png',
+        color1: '#111E25', color2: '#1A2F3B',
+        logoX: 620, logoY: 50, // Severe right shift!
+        titleX: 400, titleY: 300, titleSize: 28, // Severe downward shift and shrunken font!
+        footerX: 400, footerY: 520, footerSize: 14,
+        logoText: '✦ NEXUS AI',
+        titleText: '开启通用智能新纪元',
+        footerText: '*注：排版准则示范，最终解释权归NEXUS所有',
+        status: 'failed' as const,
+        complianceRate: 40,
+        failedRulesCount: 2
+      }
+    ];
+
+    bannerData.forEach((data, index) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 800;
+      canvas.height = 540;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const grad = ctx.createLinearGradient(0, 0, 800, 540);
+      grad.addColorStop(0, data.color1);
+      grad.addColorStop(1, data.color2);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 800, 540);
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 800; i += 40) {
+        ctx.beginPath();
+        ctx.moveTo(i, 0);
+        ctx.lineTo(i, 540);
+        ctx.stroke();
+      }
+      for (let i = 0; i < 540; i += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, i);
+        ctx.lineTo(800, i);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = 'rgba(99, 102, 241, 0.15)';
+      ctx.beginPath();
+      ctx.arc(data.logoX, data.logoY, 60, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillStyle = '#10B981';
+      ctx.fillText(data.logoText, data.logoX, data.logoY + 6);
+
+      ctx.font = `bold ${data.titleSize}px sans-serif`;
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.fillText(data.titleText, data.titleX, data.titleY);
+
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.fillText('Nexus Pro Max 多模态技术框架首发发布', data.titleX, data.titleY + 45);
+
+      ctx.font = `${data.footerSize}px sans-serif`;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.fillText(data.footerText, data.footerX, data.footerY);
+
+      const dataUrl = canvas.toDataURL('image/png');
+
+      const boxes = [
+        {
+          x: data.logoX / 800,
+          y: data.logoY / 540,
+          w: 120 / 800,
+          h: 24 / 540,
+          label: `[页眉LOGO/品牌区] 智能终端首发标志`,
+          status: index === 0 ? ('pass' as const) : index === 1 ? ('warn' as const) : ('fail' as const),
+          metricValue: index === 0 ? '位置合规' : index === 1 ? '右偏 25px' : '右移 560px'
+        },
+        {
+          x: (data.titleX - 200) / 800,
+          y: (data.titleY - 30) / 540,
+          w: 400 / 800,
+          h: 40 / 540,
+          label: `[视觉中心大标题] 排版主视觉核心`,
+          status: index === 2 ? ('fail' as const) : ('pass' as const),
+          metricValue: index === 2 ? '字号偏小且下移' : '高度合规'
+        },
+        {
+          x: (data.footerX - 250) / 800,
+          y: (data.footerY - 15) / 540,
+          w: 500 / 800,
+          h: 20 / 540,
+          label: `[页脚元数据] 版权与安全提示词 (免责声明)`,
+          status: index === 0 ? ('pass' as const) : index === 1 ? ('warn' as const) : ('fail' as const),
+          metricValue: index === 0 ? '位置合规' : index === 1 ? '上移偏位' : '高度偏离'
+        }
+      ];
+
+      batch.push({
+        id: data.id,
+        name: data.name,
+        url: dataUrl,
+        format: 'PNG',
+        width: 800,
+        height: 540,
+        size: '1.24 MB',
+        aspect: '16:9',
+        dominantColor: data.color1,
+        palette: [data.color1, data.color2, '#1E293B', '#10B981', '#FFFFFF'],
+        auditStatus: data.status,
+        complianceRate: data.complianceRate,
+        failedRulesCount: data.failedRulesCount,
+        overlayBoxes: boxes,
+        ocrResults: boxes.map(b => ({ text: b.label, x: b.x, y: b.y, w: b.w, h: b.h })),
+        customFields: []
+      });
+    });
+
+    setImageList(batch);
+    setSelectedImageId('demo-1');
+  };
+
   const triggerFileInput = () => {
     fileInputRef.current?.click();
   };
@@ -426,6 +678,41 @@ export default function App() {
         return [...prev, enrichedData];
       });
       setSelectedImageId(prev => prev ? prev : fileId);
+
+      // Eagerly pre-populate layout elements in background for instant batch comparisons (Requirement #1)
+      analyzeImageLayoutLocally(initialData.url, initialData.width, initialData.height).then(boxes => {
+        const boxesWithStatus = boxes.map((box, i) => {
+          let label = box.text;
+          if (box.y < 0.25) {
+            label = `[页眉LOGO/品牌区] 智能终端首发标志`;
+          } else if (box.y > 0.75) {
+            label = `[页脚元数据] 版权与安全提示词 (免责声明)`;
+          } else {
+            label = `[视觉中心大标题] 排版主视觉核心`;
+          }
+          return {
+            ...box,
+            label,
+            status: 'pass' as const,
+            metricValue: '位置合规'
+          };
+        });
+
+        setImageList(prev => {
+          return prev.map(item => {
+            if (item.id === fileId) {
+              return {
+                ...item,
+                overlayBoxes: boxesWithStatus,
+                ocrResults: boxesWithStatus.map(b => ({ text: b.label, x: b.x, y: b.y, w: b.w, h: b.h }))
+              };
+            }
+            return item;
+          });
+        });
+      }).catch(err => {
+        console.error('Eager background analysis failed:', err);
+      });
     } catch (err) {
       console.error('Failed to extract dominant image color', err);
       setImageList(prev => {
@@ -478,13 +765,29 @@ export default function App() {
     };
   };
 
-  const pan = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-    setPanX(e.clientX - startDragRef.current.x);
-    setPanY(e.clientY - startDragRef.current.y);
+  const handleStageMouseMove = (e: React.MouseEvent) => {
+    if (draggingGuideId) {
+      if (!previewImgRef.current) return;
+      const rect = previewImgRef.current.getBoundingClientRect();
+      const guide = manualGuides.find(g => g.id === draggingGuideId);
+      if (!guide) return;
+
+      if (guide.type === 'h') {
+        const newValue = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+        setManualGuides(prev => prev.map(g => g.id === draggingGuideId ? { ...g, value: newValue } : g));
+      } else {
+        const newValue = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        setManualGuides(prev => prev.map(g => g.id === draggingGuideId ? { ...g, value: newValue } : g));
+      }
+    } else {
+      if (!isDragging) return;
+      setPanX(e.clientX - startDragRef.current.x);
+      setPanY(e.clientY - startDragRef.current.y);
+    }
   };
 
-  const endPan = () => {
+  const handleStageMouseUp = () => {
+    setDraggingGuideId(null);
     setIsDragging(false);
   };
 
@@ -1215,6 +1518,168 @@ export default function App() {
     img.src = currentImage.url;
   };
 
+  // Find matching element for batch comparison (Requirement #1)
+  const findTargetElement = (img: ImageMetadata) => {
+    if (!img.overlayBoxes || img.overlayBoxes.length === 0) return null;
+    
+    let candidates = [...img.overlayBoxes];
+    const target = compareTarget.toLowerCase();
+    
+    // Prioritize exact manual/targetType match if available
+    const exactMatch = candidates.find(b => b.targetType === target);
+    if (exactMatch) return exactMatch;
+    
+    if (target === 'logo') {
+      const filtered = candidates.filter(b => {
+        const text = (b.label || '').toUpperCase();
+        return text.includes('LOGO') || text.includes('标志') || text.includes('标识') || text.includes('徽标') || text.includes('BRAND') || text.includes('ICON');
+      });
+      if (filtered.length > 0) return filtered[0];
+      // Fallback: element in top-left or top-center
+      const topElements = candidates.filter(b => b.x < 0.45 && b.y < 0.45);
+      if (topElements.length > 0) {
+        return topElements.sort((a, b) => (a.x * a.x + a.y * a.y) - (b.x * b.x + b.y * b.y))[0];
+      }
+    } else if (target === 'title') {
+      const filtered = candidates.filter(b => {
+        const text = (b.label || '');
+        return text.includes('标题') || text.includes('TITLE') || text.includes('title') || text.includes('主视觉') || text.includes('正文') || text.includes('大标题') || text.includes('文字排版');
+      });
+      if (filtered.length > 0) return filtered[0];
+      // Fallback: largest area element in upper-middle area
+      const midElements = candidates.filter(b => b.y >= 0.1 && b.y <= 0.65);
+      if (midElements.length > 0) {
+        return midElements.sort((a, b) => (b.w * b.h) - (a.w * a.h))[0];
+      }
+    } else if (target === 'footer' || target === 'disclaimer') {
+      const filtered = candidates.filter(b => {
+        const text = (b.label || '');
+        return text.includes('页脚') || text.includes('footer') || text.includes('FOOTER') || text.includes('免责') || text.includes('声明') || text.includes('版权') || text.includes('说明') || text.includes('提示') || text.includes('印章');
+      });
+      if (filtered.length > 0) return filtered[0];
+      // Fallback: lowest element on the page
+      const bottomElements = candidates.filter(b => b.y > 0.55);
+      if (bottomElements.length > 0) {
+        return bottomElements.sort((a, b) => b.y - a.y)[0];
+      }
+    } else if (target === 'top-left') {
+      const filtered = candidates.filter(b => b.x < 0.5 && b.y < 0.5);
+      if (filtered.length > 0) return filtered[0];
+    } else if (target === 'top-right') {
+      const filtered = candidates.filter(b => b.x >= 0.5 && b.y < 0.5);
+      if (filtered.length > 0) return filtered[0];
+    } else if (target === 'bottom-left') {
+      const filtered = candidates.filter(b => b.x < 0.5 && b.y >= 0.5);
+      if (filtered.length > 0) return filtered[0];
+    } else if (target === 'bottom-right') {
+      const filtered = candidates.filter(b => b.x >= 0.5 && b.y >= 0.5);
+      if (filtered.length > 0) return filtered[0];
+    } else if (target === 'center') {
+      const filtered = candidates.filter(b => b.x >= 0.25 && b.x <= 0.75 && b.y >= 0.25 && b.y <= 0.75);
+      if (filtered.length > 0) return filtered[0];
+    }
+
+    // Default fallback to first element if nothing matched
+    return candidates[0];
+  };
+
+  // Manual Box Selection Mouse Handlers (Requirement #1)
+  const handleManualDrawStart = (e: React.MouseEvent<HTMLDivElement>) => {
+    const container = e.currentTarget;
+    const rect = container.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    
+    setManualDrawStart({ x, y });
+    setManualDrawCurrent({ x, y });
+    setIsDrawingManualBox(true);
+  };
+
+  const handleManualDrawMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDrawingManualBox || !manualDrawStart) return;
+    const container = e.currentTarget;
+    const rect = container.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    
+    setManualDrawCurrent({ x, y });
+  };
+
+  const handleManualDrawEnd = () => {
+    if (!isDrawingManualBox || !manualDrawStart || !manualDrawCurrent || !selectedImageId) {
+      setIsDrawingManualBox(false);
+      setManualDrawStart(null);
+      setManualDrawCurrent(null);
+      return;
+    }
+
+    const minX = Math.max(0, Math.min(manualDrawStart.x, manualDrawCurrent.x));
+    const minY = Math.max(0, Math.min(manualDrawStart.y, manualDrawCurrent.y));
+    const maxX = Math.min(1, Math.max(manualDrawStart.x, manualDrawCurrent.x));
+    const maxY = Math.min(1, Math.max(manualDrawStart.y, manualDrawCurrent.y));
+    const w = maxX - minX;
+    const h = maxY - minY;
+
+    // Only update if the drawn area is significant (not a random single click)
+    if (w > 0.005 && h > 0.005) {
+      const target = compareTarget.toLowerCase();
+      let labelText = '';
+      if (target === 'logo') labelText = `[手动定位] 品牌LOGO / 视觉标志`;
+      else if (target === 'title') labelText = `[手动定位] 首屏主标题 / 核心口号`;
+      else if (target === 'footer') labelText = `[手动定位] 底部免责声明 / 官方说明`;
+      else if (target === 'top-left') labelText = `[手动定位] 左上角象限区域`;
+      else if (target === 'top-right') labelText = `[手动定位] 右上角象限区域`;
+      else if (target === 'bottom-left') labelText = `[手动定位] 左下角象限区域`;
+      else if (target === 'bottom-right') labelText = `[手动定位] 右下角象限区域`;
+      else if (target === 'center') labelText = `[手动定位] 中部视觉舞台`;
+      else labelText = `[手动定位] ${compareTarget}`;
+
+      const newBox: BoundingBox = {
+        x: minX,
+        y: minY,
+        w,
+        h,
+        label: labelText,
+        status: 'pass',
+        targetType: target,
+        metricValue: '手动校准位置'
+      };
+
+      setImageList(prev => prev.map(img => {
+        if (img.id === selectedImageId) {
+          const boxes = img.overlayBoxes ? [...img.overlayBoxes] : [];
+          // Remove any existing boxes with the same targetType
+          const filtered = boxes.filter(b => b.targetType !== target);
+          return {
+            ...img,
+            overlayBoxes: [...filtered, newBox]
+          };
+        }
+        return img;
+      }));
+    }
+
+    setIsDrawingManualBox(false);
+    setManualDrawStart(null);
+    setManualDrawCurrent(null);
+  };
+
+  const handleClearManualBox = () => {
+    if (!selectedImageId) return;
+    const target = compareTarget.toLowerCase();
+    setImageList(prev => prev.map(img => {
+      if (img.id === selectedImageId) {
+        const boxes = img.overlayBoxes ? [...img.overlayBoxes] : [];
+        const filtered = boxes.filter(b => b.targetType !== target);
+        return {
+          ...img,
+          overlayBoxes: filtered
+        };
+      }
+      return img;
+    }));
+  };
+
   return (
     <div className="h-full flex flex-col xl:flex-row print-full bg-[#0B0F19] text-slate-100 font-sans antialiased overflow-hidden">
       
@@ -1462,6 +1927,138 @@ export default function App() {
             )}
           </div>
 
+          {/* OVERLAY MODE CONTROL PANEL (Requirement #3) */}
+          {workspaceMode === 'overlay_check' && (
+            <div className="space-y-4 bg-slate-800/30 border border-slate-800/80 rounded-xl p-4 mt-6">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-emerald-400 shrink-0" />
+                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                  叠放透明度微调中心
+                </h3>
+              </div>
+              <p className="text-[10px] text-slate-400 leading-relaxed font-sans">
+                手动调节队列中其他各层图片的透明度、叠放顺序或混合模式，校验与主图元素重合一致性。
+              </p>
+
+              {/* Blend Mode Option */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center">
+                  <label className="text-[10px] font-bold text-slate-400">色彩混合模式 (Blend Mode)</label>
+                </div>
+                <select
+                  value={overlayBlendMode}
+                  onChange={(e) => setOverlayBlendMode(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                >
+                  <option value="normal">Normal (标准不合并)</option>
+                  <option value="multiply">Multiply (正片叠底 - 推荐比对白底图)</option>
+                  <option value="screen">Screen (滤色 - 推荐比对暗底图)</option>
+                  <option value="difference">Difference (差值 - 位置完全相同区域会变黑)</option>
+                  <option value="overlay">Overlay (叠加)</option>
+                </select>
+              </div>
+
+              {/* Global Slider */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center text-[10px] font-bold">
+                  <span className="text-slate-400">全局覆盖层透明度 (Global Opacity)</span>
+                  <span className="text-emerald-400 font-mono">{Math.round(globalOverlayOpacity * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={Math.round(globalOverlayOpacity * 100)}
+                  onChange={(e) => {
+                    const val = Number(e.target.value) / 100;
+                    setGlobalOverlayOpacity(val);
+                    // Update all visible non-base layer opacities to match global as base default
+                    const updated: Record<string, number> = {};
+                    imageList.forEach(img => {
+                      updated[img.id] = val;
+                    });
+                    setImageOpacities(updated);
+                  }}
+                  className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                />
+              </div>
+
+              {/* Individual Image Layers */}
+              <div className="space-y-2">
+                <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest block border-b border-slate-800/80 pb-1">
+                  图层级微调 (Individual Layers)
+                </span>
+                
+                <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-800">
+                  {imageList.map((img) => {
+                    const isBase = img.id === selectedImageId;
+                    const isChecked = overlayImageIds.includes(img.id);
+                    const opacityVal = imageOpacities[img.id] ?? globalOverlayOpacity;
+
+                    return (
+                      <div 
+                        key={img.id}
+                        className={`p-2 rounded-lg border text-[11px] space-y-1.5 transition-all ${
+                          isBase 
+                            ? 'bg-blue-950/20 border-blue-500/30' 
+                            : isChecked 
+                              ? 'bg-slate-900/60 border-slate-800' 
+                              : 'bg-slate-900/20 border-transparent opacity-60'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <label className="flex items-center gap-1.5 cursor-pointer select-none truncate flex-1 font-sans">
+                            <input
+                              type="checkbox"
+                              disabled={isBase}
+                              checked={isChecked}
+                              onChange={() => {
+                                if (isChecked) {
+                                  setOverlayImageIds(prev => prev.filter(id => id !== img.id));
+                                } else {
+                                  setOverlayImageIds(prev => [...prev, img.id]);
+                                }
+                              }}
+                              className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-emerald-500 cursor-pointer disabled:opacity-40 animate-none"
+                            />
+                            <span className="font-semibold text-slate-300 truncate max-w-[120px]" title={img.name}>
+                              {img.name}
+                            </span>
+                          </label>
+                          <span className="text-[9px] font-mono shrink-0 px-1 py-0.5 rounded bg-slate-950 text-slate-400">
+                            {isBase ? '主对照基准图' : isChecked ? '叠放层' : '已隐藏'}
+                          </span>
+                        </div>
+
+                        {!isBase && isChecked && (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="range"
+                              min="0"
+                              max="100"
+                              value={Math.round(opacityVal * 100)}
+                              onChange={(e) => {
+                                const val = Number(e.target.value) / 100;
+                                setImageOpacities(prev => ({
+                                  ...prev,
+                                  [img.id]: val
+                                }));
+                              }}
+                              className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                            />
+                            <span className="text-[10px] font-mono font-bold text-emerald-400 w-8 text-right">
+                              {Math.round(opacityVal * 100)}%
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
 
       </aside>
@@ -1476,46 +2073,106 @@ export default function App() {
           <div className="flex items-center gap-3">
             <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
             <h2 className="text-xs font-semibold text-slate-300 uppercase tracking-widest font-mono">
-              Workspace Core Stage
+              Workspace Stage
             </h2>
           </div>
 
+          {/* Core Feature Switcher Dropdown & Switch Option (Requirement #3) */}
+          {imageList.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-bold text-slate-500 hidden md:inline">工作模式:</span>
+              <div className="relative">
+                <select
+                  value={workspaceMode}
+                  onChange={(e) => setWorkspaceMode(e.target.value as any)}
+                  className="bg-slate-900 border border-slate-800 rounded-xl pl-3 pr-8 py-1.5 text-xs text-slate-100 font-bold focus:outline-none focus:border-blue-500 cursor-pointer appearance-none relative transition-colors shadow-sm"
+                >
+                  <option value="single">🔬 单图精细排版深度审核模式</option>
+                  <option value="batch_compare">📊 批量一致性比对审核模式</option>
+                  <option value="overlay_check">🥞 多图叠放透光校验沙盒</option>
+                </select>
+                <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-[10px]">
+                  ▼
+                </div>
+              </div>
+            </div>
+          )}
+
           {currentImage && (
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => adjustZoom(0.1)}
-                className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-2 rounded-xl transition-colors cursor-pointer"
-                title="放大"
-              >
-                <ZoomIn className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => adjustZoom(-0.1)}
-                className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-2 rounded-xl transition-colors cursor-pointer"
-                title="缩小"
-              >
-                <ZoomOut className="w-4 h-4" />
-              </button>
-              <button
-                onClick={resetView}
-                className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-2 rounded-xl transition-colors cursor-pointer"
-                title="还原视图"
-              >
-                <RotateCcw className="w-4 h-4" />
-              </button>
-              <span className="w-px h-4 bg-slate-800" />
-              <button
-                onClick={() => setShowAnnotations(!showAnnotations)}
-                className={`flex items-center gap-1.5 text-xs py-2 px-3 rounded-xl transition-all cursor-pointer ${
-                  showAnnotations 
-                    ? 'bg-blue-600 text-white font-medium shadow-md shadow-blue-500/10' 
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-300'
-                }`}
-              >
-                {showAnnotations ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                标注遮罩
-              </button>
-            </div>
+              {workspaceMode !== 'batch_compare' && (
+                <>
+                  <button
+                    onClick={() => adjustZoom(0.1)}
+                    className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-2 rounded-xl transition-colors cursor-pointer"
+                    title="放大"
+                  >
+                    <ZoomIn className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => adjustZoom(-0.1)}
+                    className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-2 rounded-xl transition-colors cursor-pointer"
+                    title="缩小"
+                  >
+                    <ZoomOut className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={resetView}
+                    className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-2 rounded-xl transition-colors cursor-pointer"
+                    title="还原视图"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                  </button>
+                  <span className="w-px h-4 bg-slate-800" />
+                </>
+              )}
+               <button
+                 onClick={() => setShowAnnotations(!showAnnotations)}
+                 className={`flex items-center gap-1.5 text-xs py-2 px-3 rounded-xl transition-all cursor-pointer ${
+                   showAnnotations 
+                     ? 'bg-blue-600 text-white font-medium shadow-md shadow-blue-500/10' 
+                     : 'bg-slate-800 text-slate-400 hover:text-slate-300'
+                 }`}
+               >
+                 {showAnnotations ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                 标注遮罩
+               </button>
+
+               {workspaceMode !== 'batch_compare' && (
+                 <div className="flex items-center gap-1.5 bg-slate-900/60 p-1 rounded-xl border border-slate-800">
+                   <span className="text-[10px] font-bold text-slate-400 px-2 font-sans">辅助参考线:</span>
+                   <button
+                     onClick={() => {
+                       setManualGuides(prev => [...prev, { id: Date.now().toString(), type: 'v', value: 0.5 }]);
+                       setShowAnnotations(true);
+                     }}
+                     className="flex items-center gap-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 px-2.5 rounded-lg transition-colors cursor-pointer"
+                     title="添加垂直参考线"
+                   >
+                     <span className="text-emerald-400 font-bold">|</span> 垂直
+                   </button>
+                   <button
+                     onClick={() => {
+                       setManualGuides(prev => [...prev, { id: Date.now().toString(), type: 'h', value: 0.5 }]);
+                       setShowAnnotations(true);
+                     }}
+                     className="flex items-center gap-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 px-2.5 rounded-lg transition-colors cursor-pointer"
+                     title="添加水平参考线"
+                   >
+                     <span className="text-emerald-400 font-bold">―</span> 水平
+                   </button>
+                   {manualGuides.length > 0 && (
+                     <button
+                       onClick={() => setManualGuides([])}
+                       className="text-[11px] hover:text-red-400 bg-red-500/10 hover:bg-red-500/20 text-red-300 py-1.5 px-2.5 rounded-lg transition-colors cursor-pointer"
+                       title="清除全部参考线"
+                     >
+                       清空
+                     </button>
+                   )}
+                 </div>
+               )}
+             </div>
           )}
         </header>
 
@@ -1561,6 +2218,20 @@ export default function App() {
                 </div>
               </div>
 
+              {/* DEMO TEST BUTTON (Requirement #3) */}
+              <div className="flex flex-col items-center justify-center pt-2">
+                <button
+                  onClick={loadDemoBatchImages}
+                  className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-semibold py-3 px-6 rounded-2xl transition-all cursor-pointer shadow-lg shadow-blue-500/20 hover:scale-[1.02] border border-blue-400/20 active:scale-95"
+                >
+                  <Sparkles className="w-4 h-4 text-emerald-300 animate-pulse" />
+                  <span>加载 3 张智能终端演示主图 (极速测试)</span>
+                </button>
+                <p className="text-[10px] text-slate-500 mt-2 font-sans">
+                  *一键加载预置了轻微偏移、严重违规、规范对齐的Banner包，极速校验各项比对与叠放功能
+                </p>
+              </div>
+
               <div className="bg-slate-800/20 rounded-2xl p-4 border border-slate-800/60 flex items-start gap-3 text-left">
                 <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
                 <div className="space-y-1">
@@ -1574,266 +2245,835 @@ export default function App() {
               </div>
             </div>
           ) : (
-            /* ACTIVE IMAGE PREVIEW CANVAS VIEWPORT */
-            <div 
-              className="absolute inset-0 select-none"
-              onMouseDown={startDragRef.current ? startPan : undefined}
-              onMouseMove={startDragRef.current ? pan : undefined}
-              onMouseUp={endPan}
-              onMouseLeave={endPan}
-              onWheel={onWheel}
-            >
-              {/* STAGE CONTAINER WITH TRANSFORMS */}
-              <div 
-                className="absolute origin-center transition-transform duration-75 flex items-center justify-center"
-                style={{
-                  ...stageStyle,
-                  left: `calc(50% - ${currentImage.width / 2}px + ${panX}px)`,
-                  top: `calc(50% - ${currentImage.height / 2}px + ${panY}px)`,
-                  width: `${currentImage.width}px`,
-                  height: `${currentImage.height}px`
-                }}
-              >
-                {/* ORIGINAL IMG */}
-                <img 
-                  ref={previewImgRef}
-                  src={currentImage.url} 
-                  alt="Audit target preview" 
-                  className="w-full h-full object-contain shadow-2xl rounded-sm pointer-events-none"
-                />
-
-                {/* HORIZONTAL & VERTICAL CENTERLINE ALIGNMENT GUIDES */}
-                {showAnnotations && (
-                  <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden">
-                    {/* Vertical Centerline */}
-                    <div className="absolute inset-y-0 left-1/2 w-[1.5px] border-l-2 border-dashed border-cyan-400/70">
-                      <div className="absolute top-3 left-3 bg-slate-900/90 border border-cyan-500/30 text-cyan-400 text-[9px] px-2 py-0.5 rounded-md shadow-lg font-mono flex items-center gap-1.5 backdrop-blur-sm">
-                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                        <span>垂直中心基准线 (X: 50%)</span>
-                      </div>
+            workspaceMode === 'batch_compare' ? (
+              <div className="absolute inset-0 bg-[#0B1120] overflow-y-auto p-6 space-y-6 select-text pointer-events-auto z-10 text-left">
+                {/* Dashboard Header Panel */}
+                <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 space-y-4 shadow-xl">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-base font-bold text-white flex items-center gap-2">
+                        <LayoutGrid className="w-5 h-5 text-blue-500 animate-pulse" />
+                        <span>同一批次元素位置一致性比对与手动校正台</span>
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1 font-sans">
+                        系统自动测算并校准批量画面几何排版的高度一致性。您可在此直接切换和画定精确的元素选区。
+                      </p>
                     </div>
-                    {/* Horizontal Centerline */}
-                    <div className="absolute inset-x-0 top-1/2 h-[1.5px] border-t-2 border-dashed border-cyan-400/70">
-                      <div className="absolute left-3 top-3 bg-slate-900/90 border border-cyan-500/30 text-cyan-400 text-[9px] px-2 py-0.5 rounded-md shadow-lg font-mono flex items-center gap-1.5 backdrop-blur-sm">
-                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                        <span>水平中心基准线 (Y: 50%)</span>
+
+                    {/* Quick Config Controls */}
+                    <div className="flex flex-wrap items-center gap-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] font-bold text-slate-400">选择要比对的视觉目标元素 / Category</label>
+                        <select
+                          value={compareTarget}
+                          onChange={(e) => setCompareTarget(e.target.value)}
+                          className="bg-slate-900 border border-slate-700/60 rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-blue-500 cursor-pointer font-sans font-bold"
+                        >
+                          <option value="logo">品牌Logo / 视觉标志 (LOGO)</option>
+                          <option value="title">首屏主标题 / 核心口号 (Title)</option>
+                          <option value="footer">底部免责声明 / 官方说明 (Footer)</option>
+                          <option value="top-left">左上角象限区域 (Top-Left Quad)</option>
+                          <option value="top-right">右上角象限区域 (Top-Right Quad)</option>
+                          <option value="bottom-left">左下角象限区域 (Bottom-Left Quad)</option>
+                          <option value="bottom-right">右下角象限区域 (Bottom-Right Quad)</option>
+                          <option value="center">中部视觉核心舞台 (Center Stage)</option>
+                        </select>
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] font-bold text-slate-400">对齐一致性容差阈值: {comparisonTolerance}px</label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="range"
+                            min="2"
+                            max="30"
+                            value={comparisonTolerance}
+                            onChange={(e) => setComparisonTolerance(Number(e.target.value))}
+                            className="w-24 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                          />
+                          <span className="text-xs font-mono font-bold text-blue-400">{comparisonTolerance}px</span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                )}
 
-                {/* OVERLAYS ANNOTATION CANVAS */}
-                {showAnnotations && overlayBoxes.length > 0 && (
-                  <div className="absolute inset-0 z-20 pointer-events-auto">
-                    {overlayBoxes.map((box, idx) => {
-                      const isHighlighted = highlightedBoxIndex === idx;
-                      const isHovered = hoveredBoxIndex === idx;
-                      const showMeasurements = isHighlighted || isHovered;
-                      
-                      let strokeColor = 'border-emerald-500 bg-emerald-500/10 text-emerald-300';
-                      let iconColor = 'bg-emerald-500';
-                      
-                      if (box.status === 'fail') {
-                        strokeColor = 'border-rose-500 bg-rose-500/10 text-rose-300';
-                        iconColor = 'bg-rose-500';
-                      } else if (box.status === 'warn') {
-                        strokeColor = 'border-amber-500 bg-amber-500/10 text-amber-300';
-                        iconColor = 'bg-amber-500';
-                      }
+                  <div className="border-t border-slate-800/80 pt-3 flex items-center gap-2 text-[11px] text-slate-400">
+                    <Info className="w-4 h-4 text-blue-400 shrink-0" />
+                    <span>
+                      <strong>校验与对齐原理：</strong>系统抓取（或手动圈定）本批次内各图片的视觉对象。以队列中<strong>第一张</strong>成功测出该目标的图像位置为「设计基准标杆」，测算其余图片的几何像素级偏差。
+                    </span>
+                  </div>
+                </div>
 
-                      // Physical values
-                      const left_px = Math.round(box.x * currentImage.width);
-                      const right_px = Math.round((box.x + box.w) * currentImage.width);
-                      const top_px = Math.round(box.y * currentImage.height);
-                      const bottom_px = Math.round((box.y + box.h) * currentImage.height);
-                      
-                      const imgCenterX = currentImage.width / 2;
-                      const imgCenterY = currentImage.height / 2;
+                {/* Split Workspace Column Layout */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  
+                  {/* Left Column - Visual Interactive Workbench */}
+                  <div className="lg:col-span-7 bg-slate-900/90 border border-slate-800/80 rounded-2xl p-5 space-y-4 shadow-xl text-left">
+                    <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-200 uppercase tracking-widest font-mono flex items-center gap-2">
+                          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-ping" />
+                          <span>视觉选区高精校正台</span>
+                        </h4>
+                        <p className="text-[10px] text-slate-500 mt-0.5">
+                          当前检视: <strong className="text-slate-300 font-sans">{currentImage?.name || '未选择'}</strong>
+                        </p>
+                      </div>
 
-                      const left_dist = Math.abs(left_px - imgCenterX);
-                      const right_dist = Math.abs(right_px - imgCenterX);
-                      const top_dist = Math.abs(top_px - imgCenterY);
-                      const bottom_dist = Math.abs(bottom_px - imgCenterY);
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-mono font-semibold text-slate-400 bg-slate-950 px-2.5 py-1 rounded-lg">
+                          类别: {compareTarget.toUpperCase()}
+                        </span>
+                      </div>
+                    </div>
 
-                      const deltaX = Math.round((box.x + box.w/2 - 0.5) * currentImage.width);
-                      const deltaY = Math.round((box.y + box.h/2 - 0.5) * currentImage.height);
+                    {/* Interactive Canvas Viewport */}
+                    {currentImage ? (
+                      <div className="space-y-3">
+                        <div 
+                          className="relative w-full aspect-video sm:aspect-[4/3] md:aspect-[16/10] bg-[#05070D] rounded-xl overflow-hidden border border-slate-800/80 flex items-center justify-center cursor-crosshair select-none group shadow-inner"
+                          onMouseDown={handleManualDrawStart}
+                          onMouseMove={handleManualDrawMove}
+                          onMouseUp={handleManualDrawEnd}
+                        >
+                          <img 
+                            src={currentImage.url} 
+                            className="object-contain max-w-full max-h-full transition-all pointer-events-none select-none" 
+                            alt="Visual Workbench" 
+                          />
+                          
+                          {/* Visual Grid Lines Overlay */}
+                          <div className="absolute inset-0 pointer-events-none opacity-10">
+                            <div className="absolute inset-y-0 left-1/4 w-px border-l border-dashed border-white" />
+                            <div className="absolute inset-y-0 left-2/4 w-px border-l border-dashed border-white" />
+                            <div className="absolute inset-y-0 left-3/4 w-px border-l border-dashed border-white" />
+                            <div className="absolute inset-x-0 top-1/4 h-px border-t border-dashed border-white" />
+                            <div className="absolute inset-x-0 top-2/4 h-px border-t border-dashed border-white" />
+                            <div className="absolute inset-x-0 top-3/4 h-px border-t border-dashed border-white" />
+                          </div>
 
-                      return (
-                        <React.Fragment key={idx}>
-                          {/* THE BOUNDING BOX */}
-                          <div
-                            style={boxStyle(box)}
-                            onMouseEnter={() => setHoveredBoxIndex(idx)}
-                            onMouseLeave={() => setHoveredBoxIndex(null)}
-                            onClick={() => {
-                              setHighlightedBoxIndex(isHighlighted ? null : idx);
-                            }}
-                            className={`absolute border-2 rounded-sm transition-all flex flex-col justify-between cursor-pointer ${strokeColor} ${
-                              isHighlighted ? 'ring-4 ring-blue-500 ring-offset-1 scale-[1.01] z-30' : 'hover:scale-[1.01] z-20'
-                            }`}
-                          >
-                            {/* Top Tag Label */}
-                            <div className={`absolute top-0 left-0 -translate-y-full ${iconColor} text-white font-sans text-[10px] font-bold px-1 py-0.5 rounded-t-sm flex items-center gap-1 shadow-md whitespace-nowrap`}>
-                              <span>{box.label}</span>
-                              {box.metricValue && (
-                                <span className="opacity-80 font-mono text-[9px] border-l border-white/20 pl-1 ml-1">
-                                  {box.metricValue}
+                          {/* Render Target Bounding Box Overlay */}
+                          {(() => {
+                            const elem = findTargetElement(currentImage);
+                            if (!elem) return null;
+                            const isManual = elem.targetType === compareTarget.toLowerCase();
+                            return (
+                              <div
+                                className={`absolute border-2 ${
+                                  isManual 
+                                    ? 'border-emerald-500 bg-emerald-500/10 shadow-[0_0_15px_rgba(16,185,129,0.5)]' 
+                                    : 'border-blue-500 bg-blue-500/10 shadow-[0_0_15px_rgba(59,130,246,0.4)]'
+                                } flex flex-col justify-between`}
+                                style={{
+                                  left: `${elem.x * 100}%`,
+                                  top: `${elem.y * 100}%`,
+                                  width: `${elem.w * 100}%`,
+                                  height: `${elem.h * 100}%`
+                                }}
+                              >
+                                <div className={`text-[9px] font-bold px-1.5 py-0.5 rounded-br-sm inline-block self-start leading-none uppercase text-white ${
+                                  isManual ? 'bg-emerald-600' : 'bg-blue-600'
+                                }`}>
+                                  {isManual ? '🎯 手动定位选区' : '🤖 AI 智能匹配区'}
+                                </div>
+                                <div className={`border-t text-[9px] font-mono p-1 flex justify-between items-center gap-1.5 leading-none ${
+                                  isManual 
+                                    ? 'bg-emerald-950/90 border-emerald-500/40 text-emerald-300' 
+                                    : 'bg-blue-950/90 border-blue-500/40 text-blue-300'
+                                }`}>
+                                  <span className="truncate max-w-[150px]">{elem.label}</span>
+                                  <span className="text-white font-bold text-right">{Math.round(elem.w * currentImage.width)}×{Math.round(elem.h * currentImage.height)}px</span>
+                                </div>
+                              </div>
+                            );
+                          })()}
+
+                          {/* Render Realtime mouse drawing rectangle overlay */}
+                          {isDrawingManualBox && manualDrawStart && manualDrawCurrent && (
+                            <div
+                              className="absolute border-2 border-dashed border-cyan-400 bg-cyan-400/20 shadow-[0_0_15px_rgba(34,211,238,0.55)]"
+                              style={{
+                                left: `${Math.min(manualDrawStart.x, manualDrawCurrent.x) * 100}%`,
+                                top: `${Math.min(manualDrawStart.y, manualDrawCurrent.y) * 100}%`,
+                                width: `${Math.abs(manualDrawCurrent.x - manualDrawStart.x) * 100}%`,
+                                height: `${Math.abs(manualDrawCurrent.y - manualDrawStart.y) * 100}%`
+                              }}
+                            >
+                              <div className="absolute -top-6 left-0 bg-cyan-500 text-slate-950 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-lg flex items-center gap-1">
+                                <span className="h-1.5 w-1.5 rounded-full bg-slate-950 animate-ping" />
+                                <span>按住并拖拽绘制选区...</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80">
+                          <div className="flex items-center gap-2 text-[11px] text-slate-400">
+                            <Sparkles className="w-3.5 h-3.5 text-blue-400 animate-pulse shrink-0" />
+                            <span>
+                              <strong>框选校准指南：</strong>在上方大图上<strong>直接按住并拖动鼠标</strong>即可画定精确选区。
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {(() => {
+                              const elem = findTargetElement(currentImage);
+                              const isManual = elem?.targetType === compareTarget.toLowerCase();
+                              return isManual ? (
+                                <button
+                                  onClick={handleClearManualBox}
+                                  className="bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-400 text-[11px] font-bold px-3 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                                  title="清除当前图片的手动校准定位"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5" />
+                                  <span>重置为自动识别</span>
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-slate-500 font-mono italic">
+                                  当前为 AI 自动抓取位置
                                 </span>
-                              )}
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center p-12 bg-slate-950/40 rounded-xl border border-dashed border-slate-800 text-slate-500 text-xs">
+                        请在右侧对齐列表中点击选择一张图片进行检视和手动框选定位
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right Column - Alignment Comparison Checklist */}
+                  <div className="lg:col-span-5 bg-slate-900/90 border border-slate-800/80 rounded-2xl p-5 space-y-4 shadow-xl text-left">
+                    <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+                      <h4 className="text-xs font-bold text-slate-200 uppercase tracking-widest font-mono flex items-center gap-2">
+                        <span className="h-2.5 w-2.5 rounded-full bg-blue-500 animate-pulse" />
+                        <span>排版一致性对齐矩阵列表</span>
+                      </h4>
+                      <span className="text-[10px] font-mono font-bold text-slate-400 bg-slate-950 px-2 py-0.5 rounded-md">
+                        {imageList.length} Files
+                      </span>
+                    </div>
+
+                    <div className="space-y-2.5 max-h-[520px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-800">
+                      {(() => {
+                        // Find reference image
+                        let baseElement: any = null;
+                        let baseImg: ImageMetadata | null = null;
+                        for (const img of imageList) {
+                          const found = findTargetElement(img);
+                          if (found) {
+                            baseElement = found;
+                            baseImg = img;
+                            break;
+                          }
+                        }
+
+                        return imageList.map((img) => {
+                          const foundElem = findTargetElement(img);
+                          const isSelected = selectedImageId === img.id;
+                          const isBaseImg = baseImg && baseImg.id === img.id;
+
+                          // Calculate stats
+                          let cx = 0, cy = 0, w_px = 0, h_px = 0;
+                          let diffX = 0, diffY = 0, maxShift = 0;
+                          if (foundElem) {
+                            cx = Math.round((foundElem.x + foundElem.w / 2) * img.width);
+                            cy = Math.round((foundElem.y + foundElem.h / 2) * img.height);
+                            w_px = Math.round(foundElem.w * img.width);
+                            h_px = Math.round(foundElem.h * img.height);
+
+                            if (baseElement && baseImg && !isBaseImg) {
+                              const b_cx = Math.round((baseElement.x + baseElement.w / 2) * baseImg.width);
+                              const b_cy = Math.round((baseElement.y + baseElement.h / 2) * baseImg.height);
+                              diffX = Math.abs(cx - b_cx);
+                              diffY = Math.abs(cy - b_cy);
+                              maxShift = Math.max(diffX, diffY);
+                            }
+                          }
+
+                          let statusText = '';
+                          let statusColor = '';
+                          if (!foundElem) {
+                            statusText = '无匹配目标';
+                            statusColor = 'bg-slate-800 border-slate-700 text-slate-400';
+                          } else if (isBaseImg) {
+                            statusText = '基准标杆 ⭐';
+                            statusColor = 'bg-blue-500/10 border-blue-500/30 text-blue-400 font-bold';
+                          } else if (maxShift <= comparisonTolerance) {
+                            statusText = `完美对准 (Δ ${maxShift}px)`;
+                            statusColor = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-medium';
+                          } else if (maxShift <= comparisonTolerance + 10) {
+                            statusText = `微幅偏差 (Δ ${maxShift}px)`;
+                            statusColor = 'bg-amber-500/10 border-amber-500/30 text-amber-400 font-medium';
+                          } else {
+                            statusText = `偏移超标 ❌ (Δ ${maxShift}px)`;
+                            statusColor = 'bg-rose-500/10 border-rose-500/30 text-rose-400 font-bold';
+                          }
+
+                          return (
+                            <div
+                              key={img.id}
+                              onClick={() => setSelectedImageId(img.id)}
+                              className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer text-left transition-all hover:bg-slate-800/40 ${
+                                isSelected 
+                                  ? 'bg-slate-800/80 border-blue-500 ring-2 ring-blue-500/20 shadow-lg shadow-blue-500/5' 
+                                  : 'bg-slate-950/40 border-slate-800/80'
+                              }`}
+                            >
+                              {/* Thumbnail with overlay bounding box */}
+                              <div className="relative w-12 h-12 bg-slate-950 border border-slate-800/80 rounded-lg overflow-hidden flex items-center justify-center shrink-0">
+                                <img src={img.url} className="object-contain max-w-full max-h-full" alt="thumb" />
+                                {foundElem && (
+                                  <div 
+                                    className={`absolute border ${foundElem.targetType === compareTarget.toLowerCase() ? 'border-emerald-500 bg-emerald-500/20' : 'border-red-500 bg-red-500/10'}`}
+                                    style={{
+                                      left: `${foundElem.x * 100}%`,
+                                      top: `${foundElem.y * 100}%`,
+                                      width: `${foundElem.w * 100}%`,
+                                      height: `${foundElem.h * 100}%`
+                                    }}
+                                  />
+                                )}
+                              </div>
+
+                              {/* Text Details */}
+                              <div className="flex-1 min-w-0 space-y-1">
+                                <div className="flex items-center justify-between gap-1.5">
+                                  <span className="text-[11px] font-bold text-slate-200 truncate block max-w-[120px]" title={img.name}>
+                                    {img.name}
+                                  </span>
+                                  <span className={`text-[9px] px-1.5 py-0.5 rounded-md border shrink-0 ${statusColor}`}>
+                                    {statusText}
+                                  </span>
+                                </div>
+                                
+                                {foundElem ? (
+                                  <div className="flex flex-wrap items-center gap-x-2 text-[9px] text-slate-400 font-mono leading-none">
+                                    <span>规格: <strong className="text-slate-300">{w_px}×{h_px} px</strong></span>
+                                    {!isBaseImg && foundElem && baseElement && (
+                                      <>
+                                        <span className="text-slate-700">|</span>
+                                        <span className={maxShift <= comparisonTolerance ? 'text-emerald-400' : maxShift <= comparisonTolerance + 10 ? 'text-amber-400' : 'text-rose-400'}>
+                                          ΔX:{cx - Math.round((baseElement.x + baseElement.w/2)*baseImg!.width)}px ΔY:{cy - Math.round((baseElement.y + baseElement.h/2)*baseImg!.height)}px
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <p className="text-[9px] text-slate-600 font-mono leading-none">(暂无定位该视觉目标)</p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* Grid Comparison Matrix Visualizer Cards at Bottom */}
+                <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-5 space-y-4 shadow-xl text-left">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest font-mono flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
+                    <span>视觉排版对照走廊 (Visual Comparison Corridor)</span>
+                  </h4>
+                  
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                    {imageList.map((img) => {
+                      const elem = findTargetElement(img);
+                      return (
+                        <div 
+                          key={img.id}
+                          className={`bg-slate-900/90 border rounded-xl overflow-hidden p-3.5 space-y-3 cursor-pointer hover:border-slate-700 hover:bg-slate-800/50 transition-all ${
+                            selectedImageId === img.id ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-slate-800'
+                          }`}
+                          onClick={() => {
+                            setSelectedImageId(img.id);
+                          }}
+                        >
+                          <div className="relative aspect-square rounded-lg bg-slate-950 overflow-hidden border border-slate-800/80 flex items-center justify-center">
+                            <img src={img.url} className="object-contain max-w-full max-h-full" alt={img.name} />
+                            
+                            {/* Visual reference grid */}
+                            <div className="absolute inset-0 pointer-events-none border border-slate-800/40">
+                              <div className="absolute inset-y-0 left-1/2 w-px border-l border-dashed border-cyan-500/20" />
+                              <div className="absolute inset-x-0 top-1/2 h-px border-t border-dashed border-cyan-500/20" />
                             </div>
 
-                            {/* Centering Helper Badge inside the Box */}
-                            {showMeasurements && (
-                              <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-slate-950/20 backdrop-blur-[0.5px]">
-                                <div className="bg-slate-900/90 border border-slate-700/80 rounded px-1.5 py-0.5 text-[8px] font-mono font-bold text-slate-200 shadow space-y-0.5 text-center">
-                                  <div className="text-cyan-400">
-                                    ΔX: {deltaX > 0 ? `+${deltaX}` : deltaX}px
-                                  </div>
-                                  <div className="text-pink-400">
-                                    ΔY: {deltaY > 0 ? `+${deltaY}` : deltaY}px
-                                  </div>
-                                </div>
+                            {elem && (
+                              <div 
+                                className={`absolute border-2 ${elem.targetType === compareTarget.toLowerCase() ? 'border-emerald-500 bg-emerald-500/20' : 'border-rose-500 bg-rose-500/10'} shadow-[0_0_10px_rgba(16,185,129,0.3)]`}
+                                style={{
+                                  left: `${elem.x * 100}%`,
+                                  top: `${elem.y * 100}%`,
+                                  width: `${elem.w * 100}%`,
+                                  height: `${elem.h * 100}%`
+                                }}
+                              >
+                                <span className={`absolute top-0 left-0 text-white text-[7px] font-bold px-0.5 rounded-br-sm leading-none py-0.5 ${elem.targetType === compareTarget.toLowerCase() ? 'bg-emerald-500' : 'bg-rose-500'}`}>
+                                  {elem.targetType === compareTarget.toLowerCase() ? 'MANUAL' : 'TARGET'}
+                                </span>
                               </div>
                             )}
                           </div>
-
-                          {/* MEASUREMENT GUIDELINES - DRAWN TO THE CENTERLINES */}
-                          {showMeasurements && (
-                            <div className="absolute inset-0 pointer-events-none z-30">
-                              
-                              {/* 1. Left Edge to Vertical Centerline */}
-                              {box.x < 0.5 ? (
-                                <div 
-                                  className="absolute border-t border-dashed border-cyan-400/90 flex items-center justify-center"
-                                  style={{
-                                    left: `${box.x * 100}%`,
-                                    width: `${(0.5 - box.x) * 100}%`,
-                                    top: `${(box.y + box.h / 3) * 100}%`,
-                                    height: '0'
-                                  }}
-                                >
-                                  <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
-                                    L: {left_dist}px
-                                  </span>
-                                </div>
-                              ) : (
-                                <div 
-                                  className="absolute border-t border-dashed border-cyan-400/90 flex items-center justify-center"
-                                  style={{
-                                    left: '50%',
-                                    width: `${(box.x - 0.5) * 100}%`,
-                                    top: `${(box.y + box.h / 3) * 100}%`,
-                                    height: '0'
-                                  }}
-                                >
-                                  <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
-                                    L: {left_dist}px
-                                  </span>
-                                </div>
-                              )}
-
-                              {/* 2. Right Edge to Vertical Centerline */}
-                              {(box.x + box.w) < 0.5 ? (
-                                <div 
-                                  className="absolute border-t border-dashed border-pink-400/90 flex items-center justify-center"
-                                  style={{
-                                    left: `${(box.x + box.w) * 100}%`,
-                                    width: `${(0.5 - (box.x + box.w)) * 100}%`,
-                                    top: `${(box.y + box.h * 2 / 3) * 100}%`,
-                                    height: '0'
-                                  }}
-                                >
-                                  <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
-                                    R: {right_dist}px
-                                  </span>
-                                </div>
-                              ) : (
-                                <div 
-                                  className="absolute border-t border-dashed border-pink-400/90 flex items-center justify-center"
-                                  style={{
-                                    left: '50%',
-                                    width: `${((box.x + box.w) - 0.5) * 100}%`,
-                                    top: `${(box.y + box.h * 2 / 3) * 100}%`,
-                                    height: '0'
-                                  }}
-                                >
-                                  <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
-                                    R: {right_dist}px
-                                  </span>
-                                </div>
-                              )}
-
-                              {/* 3. Top Edge to Horizontal Centerline */}
-                              {box.y < 0.5 ? (
-                                <div 
-                                  className="absolute border-l border-dashed border-cyan-400/90 flex flex-col items-center justify-center"
-                                  style={{
-                                    top: `${box.y * 100}%`,
-                                    height: `${(0.5 - box.y) * 100}%`,
-                                    left: `${(box.x + box.w / 3) * 100}%`,
-                                    width: '0'
-                                  }}
-                                >
-                                  <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
-                                    T: {top_dist}px
-                                  </span>
-                                </div>
-                              ) : (
-                                <div 
-                                  className="absolute border-l border-dashed border-cyan-400/90 flex flex-col items-center justify-center"
-                                  style={{
-                                    top: '50%',
-                                    height: `${(box.y - 0.5) * 100}%`,
-                                    left: `${(box.x + box.w / 3) * 100}%`,
-                                    width: '0'
-                                  }}
-                                >
-                                  <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
-                                    T: {top_dist}px
-                                  </span>
-                                </div>
-                              )}
-
-                              {/* 4. Bottom Edge to Horizontal Centerline */}
-                              {(box.y + box.h) < 0.5 ? (
-                                <div 
-                                  className="absolute border-l border-dashed border-pink-400/90 flex flex-col items-center justify-center"
-                                  style={{
-                                    top: `${(box.y + box.h) * 100}%`,
-                                    height: `${(0.5 - (box.y + box.h)) * 100}%`,
-                                    left: `${(box.x + box.w * 2 / 3) * 100}%`,
-                                    width: '0'
-                                  }}
-                                >
-                                  <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
-                                    B: {bottom_dist}px
-                                  </span>
-                                </div>
-                              ) : (
-                                <div 
-                                  className="absolute border-l border-dashed border-pink-400/90 flex flex-col items-center justify-center"
-                                  style={{
-                                    top: '50%',
-                                    height: `${((box.y + box.h) - 0.5) * 100}%`,
-                                    left: `${(box.x + box.w * 2 / 3) * 100}%`,
-                                    width: '0'
-                                  }}
-                                >
-                                  <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
-                                    B: {bottom_dist}px
-                                  </span>
-                                </div>
-                              )}
-
-                            </div>
-                          )}
-                        </React.Fragment>
+                          <div className="text-center space-y-1">
+                            <p className="text-[11px] font-bold text-slate-300 truncate" title={img.name}>{img.name}</p>
+                            {elem ? (
+                              <p className="text-[9px] text-emerald-400 font-mono">
+                                X: {Math.round((elem.x + elem.w/2)*img.width)}px, Y: {Math.round((elem.y + elem.h/2)*img.height)}px
+                              </p>
+                            ) : (
+                              <p className="text-[9px] text-rose-500 font-mono font-medium">
+                                (未匹配目标元素)
+                              </p>
+                            )}
+                          </div>
+                        </div>
                       );
                     })}
                   </div>
-                )}
+                </div>
               </div>
-            </div>
+            ) : (
+              /* ACTIVE IMAGE PREVIEW CANVAS VIEWPORT */
+              <div 
+                className="absolute inset-0 select-none"
+                onMouseDown={startPan}
+                onMouseMove={handleStageMouseMove}
+                onMouseUp={handleStageMouseUp}
+                onMouseLeave={handleStageMouseUp}
+                onWheel={onWheel}
+              >
+                {/* STAGE CONTAINER WITH TRANSFORMS */}
+                <div 
+                  className="absolute origin-center transition-transform duration-75 flex items-center justify-center"
+                  style={{
+                    ...stageStyle,
+                    left: `calc(50% - ${currentImage.width / 2}px + ${panX}px)`,
+                    top: `calc(50% - ${currentImage.height / 2}px + ${panY}px)`,
+                    width: `${currentImage.width}px`,
+                    height: `${currentImage.height}px`
+                  }}
+                >
+                  {/* STACKED IMAGES (For Overlay Check Mode - Requirement #3) */}
+                  {workspaceMode === 'overlay_check' ? (
+                    <>
+                      {imageList.map((img) => {
+                        const isBase = img.id === selectedImageId;
+                        const isVisible = overlayImageIds.includes(img.id);
+                        if (!isVisible) return null;
+
+                        const opacity = isBase ? 1.0 : (imageOpacities[img.id] ?? globalOverlayOpacity);
+
+                        return (
+                          <img 
+                            key={img.id}
+                            ref={isBase ? previewImgRef : undefined}
+                            src={img.url} 
+                            alt={img.name} 
+                            className="absolute inset-0 w-full h-full object-contain shadow-2xl rounded-sm pointer-events-none transition-all duration-75"
+                            style={{
+                              opacity,
+                              mixBlendMode: isBase ? 'normal' : (overlayBlendMode as any),
+                              zIndex: isBase ? 0 : 5
+                            }}
+                          />
+                        );
+                      })}
+                    </>
+                  ) : (
+                    /* ORIGINAL SINGLE IMG */
+                    <img 
+                      ref={previewImgRef}
+                      src={currentImage.url} 
+                      alt="Audit target preview" 
+                      className="w-full h-full object-contain shadow-2xl rounded-sm pointer-events-none"
+                    />
+                  )}
+
+                  {/* HORIZONTAL & VERTICAL CENTERLINE ALIGNMENT GUIDES */}
+                  {showAnnotations && (
+                    <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden">
+                      {/* Vertical Centerline */}
+                      <div className="absolute inset-y-0 left-1/2 w-[1.5px] border-l-2 border-dashed border-cyan-400/70">
+                        <div className="absolute top-3 left-3 bg-slate-900/90 border border-cyan-500/30 text-cyan-400 text-[9px] px-2 py-0.5 rounded-md shadow-lg font-mono flex items-center gap-1.5 backdrop-blur-sm">
+                          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                          <span>垂直中心基准线 (X: 50%)</span>
+                        </div>
+                      </div>
+                      {/* Horizontal Centerline */}
+                      <div className="absolute inset-x-0 top-1/2 h-[1.5px] border-t-2 border-dashed border-cyan-400/70">
+                        <div className="absolute left-3 top-3 bg-slate-900/90 border border-cyan-500/30 text-cyan-400 text-[9px] px-2 py-0.5 rounded-md shadow-lg font-mono flex items-center gap-1.5 backdrop-blur-sm">
+                          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                          <span>水平中心基准线 (Y: 50%)</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* DRAGGABLE MANUAL REFERENCE LINES (Requirement #2) */}
+                  {showAnnotations && manualGuides.map((guide) => {
+                    const isH = guide.type === 'h';
+                    const styleValue = `${guide.value * 100}%`;
+                    const pixelValue = Math.round(guide.value * (isH ? currentImage.height : currentImage.width));
+                    
+                    return (
+                      <div
+                        key={guide.id}
+                        className={`absolute z-40 group cursor-${isH ? 'row' : 'col'}-resize pointer-events-auto`}
+                        style={{
+                          top: isH ? styleValue : 0,
+                          bottom: isH ? undefined : 0,
+                          left: isH ? 0 : styleValue,
+                          right: isH ? 0 : undefined,
+                          width: isH ? '100%' : '14px',
+                          height: isH ? '14px' : '100%',
+                          transform: isH ? 'translateY(-7px)' : 'translateX(-7px)',
+                        }}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDraggingGuideId(guide.id);
+                          setActiveGuideId(guide.id);
+                        }}
+                      >
+                        {/* Visual Line */}
+                        <div 
+                          className={`absolute inset-0 m-auto pointer-events-none transition-colors duration-150 ${
+                            activeGuideId === guide.id 
+                              ? 'bg-emerald-400' 
+                              : 'bg-emerald-500/60 group-hover:bg-emerald-400'
+                          }`}
+                          style={{
+                            width: isH ? '100%' : '2px',
+                            height: isH ? '2px' : '100%',
+                            borderStyle: 'dashed',
+                            borderWidth: isH ? '1px 0 0 0' : '0 0 0 1px',
+                            borderColor: 'rgb(16, 185, 129)'
+                          }}
+                        />
+                        
+                        {/* Handle badge */}
+                        <div 
+                          className={`absolute bg-slate-900/95 border border-emerald-500/40 text-emerald-300 text-[8px] px-1.5 py-0.5 rounded shadow-lg font-mono flex items-center gap-1.5 whitespace-nowrap select-none pointer-events-auto transition-all ${
+                            isH 
+                              ? 'right-4 top-1/2 -translate-y-1/2' 
+                              : 'top-4 left-1/2 -translate-x-1/2'
+                          } ${
+                            draggingGuideId === guide.id ? 'scale-105 border-emerald-400 text-white bg-emerald-950/95' : ''
+                          }`}
+                        >
+                          <span className={`w-1 h-1 rounded-full bg-emerald-400 ${draggingGuideId === guide.id ? 'animate-ping' : ''}`} />
+                          <span>
+                            {isH ? `Y: ${pixelValue}px` : `X: ${pixelValue}px`} ({Math.round(guide.value * 100)}%)
+                          </span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setManualGuides(prev => prev.filter(g => g.id !== guide.id));
+                            }}
+                            className="hover:text-red-400 text-[10px] font-bold ml-1.5 px-0.5"
+                            title="删除此参考线"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* OVERLAYS ANNOTATION CANVAS */}
+                  {showAnnotations && overlayBoxes.length > 0 && (
+                    <div className="absolute inset-0 z-20 pointer-events-auto">
+                      {overlayBoxes.map((box, idx) => {
+                        const isHighlighted = highlightedBoxIndex === idx;
+                        const isHovered = hoveredBoxIndex === idx;
+                        const showMeasurements = isHighlighted || isHovered;
+                        
+                        let strokeColor = 'border-emerald-500 bg-emerald-500/10 text-emerald-300';
+                        let iconColor = 'bg-emerald-500';
+                        
+                        if (box.status === 'fail') {
+                          strokeColor = 'border-rose-500 bg-rose-500/10 text-rose-300';
+                          iconColor = 'bg-rose-500';
+                        } else if (box.status === 'warn') {
+                          strokeColor = 'border-amber-500 bg-amber-500/10 text-amber-300';
+                          iconColor = 'bg-amber-500';
+                        }
+
+                        // Physical values
+                        const left_px = Math.round(box.x * currentImage.width);
+                        const right_px = Math.round((box.x + box.w) * currentImage.width);
+                        const top_px = Math.round(box.y * currentImage.height);
+                        const bottom_px = Math.round((box.y + box.h) * currentImage.height);
+                        
+                        const imgCenterX = currentImage.width / 2;
+                        const imgCenterY = currentImage.height / 2;
+
+                        const left_dist = Math.abs(left_px - imgCenterX);
+                        const right_dist = Math.abs(right_px - imgCenterX);
+                        const top_dist = Math.abs(top_px - imgCenterY);
+                        const bottom_dist = Math.abs(bottom_px - imgCenterY);
+
+                        const deltaX = Math.round((box.x + box.w/2 - 0.5) * currentImage.width);
+                        const deltaY = Math.round((box.y + box.h/2 - 0.5) * currentImage.height);
+
+                        return (
+                          <React.Fragment key={idx}>
+                            {/* THE BOUNDING BOX */}
+                            <div
+                              style={boxStyle(box)}
+                              onMouseEnter={() => setHoveredBoxIndex(idx)}
+                              onMouseLeave={() => setHoveredBoxIndex(null)}
+                              onClick={() => {
+                                setHighlightedBoxIndex(isHighlighted ? null : idx);
+                              }}
+                              className={`absolute border-2 rounded-sm transition-all flex flex-col justify-between cursor-pointer ${strokeColor} ${
+                                isHighlighted ? 'ring-4 ring-blue-500 ring-offset-1 scale-[1.01] z-30' : 'hover:scale-[1.01] z-20'
+                              }`}
+                            >
+                              {/* Top Tag Label */}
+                              <div className={`absolute top-0 left-0 -translate-y-full ${iconColor} text-white font-sans text-[10px] font-bold px-1 py-0.5 rounded-t-sm flex items-center gap-1 shadow-md whitespace-nowrap`}>
+                                <span>{box.label}</span>
+                                {box.metricValue && (
+                                  <span className="opacity-80 font-mono text-[9px] border-l border-white/20 pl-1 ml-1">
+                                    {box.metricValue}
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Centering Helper Badge inside the Box */}
+                              {showMeasurements && (
+                                <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-slate-950/20 backdrop-blur-[0.5px]">
+                                  <div className="bg-slate-900/90 border border-slate-700/80 rounded px-1.5 py-0.5 text-[8px] font-mono font-bold text-slate-200 shadow space-y-0.5 text-center">
+                                    <div className="text-cyan-400">
+                                      ΔX: {deltaX > 0 ? `+${deltaX}` : deltaX}px
+                                    </div>
+                                    <div className="text-pink-400">
+                                      ΔY: {deltaY > 0 ? `+${deltaY}` : deltaY}px
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* MEASUREMENT GUIDELINES - DRAWN TO THE CENTERLINES */}
+                            {showMeasurements && (
+                              <div className="absolute inset-0 pointer-events-none z-30">
+                                
+                                {/* 1. Left Edge to Vertical Centerline */}
+                                {box.x < 0.5 ? (
+                                  <div 
+                                    className="absolute border-t border-dashed border-cyan-400/90 flex items-center justify-center"
+                                    style={{
+                                      left: `${box.x * 100}%`,
+                                      width: `${(0.5 - box.x) * 100}%`,
+                                      top: `${(box.y + box.h / 3) * 100}%`,
+                                      height: '0'
+                                    }}
+                                  >
+                                    <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
+                                      L: {left_dist}px
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div 
+                                    className="absolute border-t border-dashed border-cyan-400/90 flex items-center justify-center"
+                                    style={{
+                                      left: '50%',
+                                      width: `${(box.x - 0.5) * 100}%`,
+                                      top: `${(box.y + box.h / 3) * 100}%`,
+                                      height: '0'
+                                    }}
+                                  >
+                                    <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
+                                      L: {left_dist}px
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* 2. Right Edge to Vertical Centerline */}
+                                {(box.x + box.w) < 0.5 ? (
+                                  <div 
+                                    className="absolute border-t border-dashed border-pink-400/90 flex items-center justify-center"
+                                    style={{
+                                      left: `${(box.x + box.w) * 100}%`,
+                                      width: `${(0.5 - (box.x + box.w)) * 100}%`,
+                                      top: `${(box.y + box.h * 2 / 3) * 100}%`,
+                                      height: '0'
+                                    }}
+                                  >
+                                    <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
+                                      R: {right_dist}px
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div 
+                                    className="absolute border-t border-dashed border-pink-400/90 flex items-center justify-center"
+                                    style={{
+                                      left: '50%',
+                                      width: `${((box.x + box.w) - 0.5) * 100}%`,
+                                      top: `${(box.y + box.h * 2 / 3) * 100}%`,
+                                      height: '0'
+                                    }}
+                                  >
+                                    <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-sm whitespace-nowrap">
+                                      R: {right_dist}px
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* 3. Top Edge to Horizontal Centerline */}
+                                {box.y < 0.5 ? (
+                                  <div 
+                                    className="absolute border-l border-dashed border-cyan-400/90 flex flex-col items-center justify-center"
+                                    style={{
+                                      top: `${box.y * 100}%`,
+                                      height: `${(0.5 - box.y) * 100}%`,
+                                      left: `${(box.x + box.w / 3) * 100}%`,
+                                      width: '0'
+                                    }}
+                                  >
+                                    <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
+                                      T: {top_dist}px
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div 
+                                    className="absolute border-l border-dashed border-cyan-400/90 flex flex-col items-center justify-center"
+                                    style={{
+                                      top: '50%',
+                                      height: `${(box.y - 0.5) * 100}%`,
+                                      left: `${(box.x + box.w / 3) * 100}%`,
+                                      width: '0'
+                                    }}
+                                  >
+                                    <span className="bg-cyan-950 text-cyan-300 border border-cyan-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
+                                      T: {top_dist}px
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* 4. Bottom Edge to Horizontal Centerline */}
+                                {(box.y + box.h) < 0.5 ? (
+                                  <div 
+                                    className="absolute border-l border-dashed border-pink-400/90 flex flex-col items-center justify-center"
+                                    style={{
+                                      top: `${(box.y + box.h) * 100}%`,
+                                      height: `${(0.5 - (box.y + box.h)) * 100}%`,
+                                      left: `${(box.x + box.w * 2 / 3) * 100}%`,
+                                      width: '0'
+                                    }}
+                                  >
+                                    <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
+                                      B: {bottom_dist}px
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div 
+                                    className="absolute border-l border-dashed border-pink-400/90 flex flex-col items-center justify-center"
+                                    style={{
+                                      top: '50%',
+                                      height: `${((box.y + box.h) - 0.5) * 100}%`,
+                                      left: `${(box.x + box.w * 2 / 3) * 100}%`,
+                                      width: '0'
+                                    }}
+                                  >
+                                    <span className="bg-pink-950 text-pink-300 border border-pink-500/30 text-[8px] font-mono font-bold px-1 rounded rotate-0 shadow-sm whitespace-nowrap">
+                                      B: {bottom_dist}px
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* 5. MEASUREMENT TO DRAGGABLE REFERENCE LINES (Requirement #2) */}
+                                {manualGuides.map((guide) => {
+                                  const refVal = guide.value;
+                                  if (guide.type === 'v') {
+                                    const refX_px = refVal * currentImage.width;
+                                    const bLeft_px = box.x * currentImage.width;
+                                    const bRight_px = (box.x + box.w) * currentImage.width;
+                                    
+                                    let startX = refVal;
+                                    let endX = box.x;
+                                    let labelText = `距参考线 L: ${Math.round(Math.abs(bLeft_px - refX_px))}px`;
+                                    
+                                    if (refVal > box.x + box.w) {
+                                      startX = box.x + box.w;
+                                      endX = refVal;
+                                      labelText = `距参考线 R: ${Math.round(Math.abs(refX_px - bRight_px))}px`;
+                                    } else if (refVal > box.x) {
+                                      startX = box.x;
+                                      endX = refVal;
+                                      labelText = `距参考线: ${Math.round(Math.abs(refX_px - bLeft_px))}px`;
+                                    }
+
+                                    return (
+                                      <div 
+                                        key={`g-meas-${guide.id}`}
+                                        className="absolute border-t border-dashed border-emerald-400/80 flex items-center justify-center z-30"
+                                        style={{
+                                          left: `${startX * 100}%`,
+                                          width: `${Math.abs(endX - startX) * 100}%`,
+                                          top: `${(box.y + box.h * (idx % 2 === 0 ? 0.25 : 0.75)) * 100}%`,
+                                          height: 0
+                                        }}
+                                      >
+                                        <span className="bg-emerald-950/95 text-emerald-400 border border-emerald-500/40 text-[7px] font-mono font-bold px-1 rounded -translate-y-1/2 shadow-lg whitespace-nowrap">
+                                          {labelText}
+                                        </span>
+                                      </div>
+                                    );
+                                  } else {
+                                    const refY_px = refVal * currentImage.height;
+                                    const bTop_px = box.y * currentImage.height;
+                                    const bBottom_px = (box.y + box.h) * currentImage.height;
+
+                                    let startY = refVal;
+                                    let endY = box.y;
+                                    let labelText = `距参考线 T: ${Math.round(Math.abs(bTop_px - refY_px))}px`;
+
+                                    if (refVal > box.y + box.h) {
+                                      startY = box.y + box.h;
+                                      endY = refVal;
+                                      labelText = `距参考线 B: ${Math.round(Math.abs(refY_px - bBottom_px))}px`;
+                                    } else if (refVal > box.y) {
+                                      startY = box.y;
+                                      endY = refVal;
+                                      labelText = `距参考线: ${Math.round(Math.abs(refY_px - bTop_px))}px`;
+                                    }
+
+                                    return (
+                                      <div 
+                                        key={`g-meas-${guide.id}`}
+                                        className="absolute border-l border-dashed border-emerald-400/80 flex flex-col items-center justify-center z-30"
+                                        style={{
+                                          top: `${startY * 100}%`,
+                                          height: `${Math.abs(endY - startY) * 100}%`,
+                                          left: `${(box.x + box.w * (idx % 2 === 0 ? 0.25 : 0.75)) * 100}%`,
+                                          width: 0
+                                        }}
+                                      >
+                                        <span className="bg-emerald-950/95 text-emerald-400 border border-emerald-500/40 text-[7px] font-mono font-bold px-1 rounded shadow-lg whitespace-nowrap">
+                                          {labelText}
+                                        </span>
+                                      </div>
+                                    );
+                                  }
+                                })}
+
+                              </div>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
           )}
 
           {/* ACTIVE SIMULATION ENGINE PROGRESS BANNER */}
@@ -1879,6 +3119,141 @@ export default function App() {
                 <Sparkles className="w-5 h-5 animate-pulse" />
                 <span>立即启动多模态排版分析</span>
               </button>
+            </div>
+          )}
+
+          {/* FLOATING OVERLAY SETTINGS PANEL (Requirement #3) */}
+          {workspaceMode === 'overlay_check' && currentImage && (
+            <div 
+              className="absolute right-6 top-6 w-80 bg-[#0B0F19]/90 border border-slate-800 rounded-2xl p-4 shadow-2xl z-50 pointer-events-auto backdrop-blur-md space-y-4 max-h-[85%] overflow-y-auto"
+              onMouseDown={(e) => e.stopPropagation()} // Prevent dragging the canvas when interacting with the panel
+            >
+              <div className="flex items-center gap-2 border-b border-slate-800/80 pb-2">
+                <Layers className="w-4 h-4 text-emerald-400 shrink-0" />
+                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                  图层叠放与透明度调节
+                </h3>
+              </div>
+              
+              <div className="bg-emerald-500/10 rounded-xl p-2.5 border border-emerald-500/20">
+                <p className="text-[10px] text-emerald-300 leading-relaxed">
+                  💡 <strong>提示：</strong>本沙盒固定各层图片完美重合。通过拉动滑块、切换「差值」模式或在右下角拖拽「辅助参考线」，极速校验多图元素几何对准度。
+                </p>
+              </div>
+
+              {/* Blend Mode */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 block">色彩混合模式 (Blend Mode)</label>
+                <select
+                  value={overlayBlendMode}
+                  onChange={(e) => setOverlayBlendMode(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                >
+                  <option value="normal">Normal (标准不合并)</option>
+                  <option value="multiply">Multiply (正片叠底 - 推荐比对白底图)</option>
+                  <option value="screen">Screen (滤色 - 推荐比对暗底图)</option>
+                  <option value="difference">Difference (差值 - 位置完全相同区域会变黑)</option>
+                  <option value="overlay">Overlay (叠加)</option>
+                </select>
+              </div>
+
+              {/* Global Slider */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center text-[10px] font-bold">
+                  <span className="text-slate-400">全局覆盖层透明度</span>
+                  <span className="text-emerald-400 font-mono">{Math.round(globalOverlayOpacity * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={Math.round(globalOverlayOpacity * 100)}
+                  onChange={(e) => {
+                    const val = Number(e.target.value) / 100;
+                    setGlobalOverlayOpacity(val);
+                    const updated: Record<string, number> = {};
+                    imageList.forEach(img => {
+                      updated[img.id] = val;
+                    });
+                    setImageOpacities(updated);
+                  }}
+                  className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                />
+              </div>
+
+              {/* Individual Layers */}
+              <div className="space-y-2 pt-2 border-t border-slate-800/80">
+                <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest block">
+                  图层级单独微调
+                </span>
+                
+                <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-800">
+                  {imageList.map((img) => {
+                    const isBase = img.id === selectedImageId;
+                    const isChecked = overlayImageIds.includes(img.id);
+                    const opacityVal = imageOpacities[img.id] ?? globalOverlayOpacity;
+
+                    return (
+                      <div 
+                        key={img.id}
+                        className={`p-2.5 rounded-xl border text-[11px] space-y-2 transition-all ${
+                          isBase 
+                            ? 'bg-blue-950/25 border-blue-500/40' 
+                            : isChecked 
+                              ? 'bg-slate-900/80 border-slate-800' 
+                              : 'bg-slate-900/30 border-transparent opacity-50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1.5">
+                          <label className="flex items-center gap-1.5 cursor-pointer select-none truncate flex-1 font-sans">
+                            <input
+                              type="checkbox"
+                              disabled={isBase}
+                              checked={isBase || isChecked}
+                              onChange={() => {
+                                if (isChecked) {
+                                  setOverlayImageIds(prev => prev.filter(id => id !== img.id));
+                                } else {
+                                  setOverlayImageIds(prev => [...prev, img.id]);
+                                }
+                              }}
+                              className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-emerald-500 cursor-pointer disabled:opacity-40"
+                            />
+                            <span className="font-bold text-slate-200 truncate max-w-[140px]" title={img.name}>
+                              {img.name}
+                            </span>
+                          </label>
+                          <span className="text-[8px] font-mono shrink-0 px-1.5 py-0.5 rounded bg-slate-950 text-slate-400">
+                            {isBase ? '主对照基底' : isChecked ? '正在叠放' : '已隐藏'}
+                          </span>
+                        </div>
+
+                        {!isBase && isChecked && (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="range"
+                              min="0"
+                              max="100"
+                              value={Math.round(opacityVal * 100)}
+                              onChange={(e) => {
+                                const val = Number(e.target.value) / 100;
+                                setImageOpacities(prev => ({
+                                  ...prev,
+                                  [img.id]: val
+                                }));
+                              }}
+                              className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                            />
+                            <span className="text-[10px] font-mono font-bold text-emerald-400 w-8 text-right">
+                              {Math.round(opacityVal * 100)}%
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
         </div>
